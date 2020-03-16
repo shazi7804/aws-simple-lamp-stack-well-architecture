@@ -1,0 +1,771 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Infrastructure included VPC, Subnet, Security Group ... etc."
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: "10.0.0.0/16"
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Description: "(Require) VPC CIDR"
+  PublicSubnetACIDR:
+    Type: String
+    Default: "10.0.0.0/24"
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Description: "(Require) Public Subnet-1a CIDR"
+  PublicSubnetBCIDR:
+    Type: String
+    Default: "10.0.1.0/24"
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Description: "(Require) Public Subnet-1b CIDR"
+  PrivateSubnetACIDR:
+    Type: String
+    Default: "10.0.3.0/24"
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Description: "(Require) Private Subnet-1a-1 CIDR"
+  PrivateSubnetBCIDR:
+    Type: String
+    Default: "10.0.4.0/24"
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Description: "(Require) Private Subnet-1b-1 CIDR"
+  InstanceType:
+    Description: (Optional) Choice ec2 instance type, default is t3.micro
+    Type: String
+    Default: t3.micro
+  InstanceImageId:
+    Description: (Optional) Choice ec2 instance image Id.
+    Type: AWS::EC2::Image::Id
+    Default: "ami-0e8c04af2729ff1bb"
+  AutoScalingOutPolicyHighCPU:
+    Type: String
+    Description: (Optional) How many percent cpu usage need to scaling up instance, default is 80 percent.
+    Default: 80
+  AutoScalingInPolicyLowCPU:
+    Type: String
+    Description: (Optional) How many percent cpu usage need to scaling down instance, default is 30 percent.
+    Default: 30
+  AutoScalingDesiredMin:
+    Type: String
+    Description: (Optional) minimum instance capacity, default is 2.
+    Default: 2
+  AutoScalingDesiredMax:
+    Type: String
+    Description: (Optional) maximum instance capacity, default is 4.
+    Default: 4
+  ALBScheme:
+    Type: String
+    Default: internet-facing
+    Description: (Optional) Choice ELB network, default is internet-facing.
+    AllowedValues:
+      - internal
+      - internet-facing
+  DatabaseReaderInstancetype:
+    Type: String
+    Default: db.t2.small
+  DatabaseName:
+    Type: String
+    Default: sampledb
+  DatabaseUserName:
+    Type: String
+    Default: defaultuser
+  DatabasePassword:
+    Type: String
+    Default: defaultpasswd
+Resources:
+  ########################################
+  #             CloudFront, S3           #
+  ########################################
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: 404.html
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'WebsiteBucket'
+      PolicyDocument:
+        Statement:
+        - Sid: PublicReadForGetBucketObjects
+          Effect: Allow
+          Principal: '*'
+          Action: s3:GetObject
+          Resource: !Join ['', ['arn:aws:s3:::', !Ref 'WebsiteBucket', /*]]
+  WebsiteCloudfront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: Cloudfront Distribution pointing to S3 bucket
+        Origins:
+          - DomainName: !GetAtt WebELB.DNSName
+            Id: ALBOrigin
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+          - DomainName: !Select [2, !Split ["/", !GetAtt WebsiteBucket.WebsiteURL]]
+            Id: S3Origin
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+        Enabled: true
+        PriceClass: PriceClass_All
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: "true"
+        HttpVersion: 'http2'
+        DefaultRootObject: index.php
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          TargetOriginId: ALBOrigin
+          ForwardedValues:
+            QueryString: true
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        CacheBehaviors:
+          - PathPattern: /static/
+            AllowedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            TargetOriginId: S3Origin
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: none
+            ViewerProtocolPolicy: redirect-to-https
+
+  ###########################################################################################################
+  #                                                VPC                                                      #
+  ###########################################################################################################
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock:
+        Ref: VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: "default"
+  ######################################
+  #               Subnet               #
+  ######################################
+  PublicSubnetA:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: !Select ["0", "Fn::GetAZs": { Ref: "AWS::Region" }]
+      CidrBlock: !Ref PublicSubnetACIDR
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+  PublicSubnetB:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: !Select ["1", "Fn::GetAZs": { Ref: "AWS::Region" }]
+      CidrBlock: !Ref PublicSubnetBCIDR
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+  PrivateSubnetA:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: !Select ["0", "Fn::GetAZs": { Ref: "AWS::Region" }]
+      CidrBlock: !Ref PrivateSubnetACIDR
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref VPC
+  PrivateSubnetB:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone: !Select ["1", "Fn::GetAZs": { Ref: "AWS::Region" }]
+      CidrBlock: !Ref PrivateSubnetBCIDR
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref VPC
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+  IGWAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  NatEipA:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: "vpc"
+  NatEipB:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: "vpc"
+  NatGatewayA:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId:
+        "Fn::GetAtt": ["NatEipA", "AllocationId"]
+      SubnetId: !Ref "PublicSubnetA"
+  NatGatewayB:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+  ######################################
+  #             Route Table            #
+  ######################################
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+  PrivateRouteTableA:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+  PrivateRouteTableB:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+  ######################################
+  #   Subnet association Route Table   #
+  ######################################
+  PublicSubnetARouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+  PublicSubnetBRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+  PrivateSubnetARouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      SubnetId: !Ref PrivateSubnetA
+  PrivateSubnetBRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      SubnetId: !Ref PrivateSubnetB
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+  PrivateRouteA:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NatGatewayA
+      RouteTableId: !Ref PrivateRouteTableA
+  PrivateRouteB:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NatGatewayA
+      RouteTableId: !Ref PrivateRouteTableB
+  ###########################################################################################################
+  #                                                EC2                                                      #
+  ###########################################################################################################
+  WebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "AmazonSSMManagedInstanceCore"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ssm:DescribeAssociation"
+                  - "ssm:GetDeployablePatchSnapshotForInstance"
+                  - "ssm:GetDocument"
+                  - "ssm:DescribeDocument"
+                  - "ssm:GetManifest"
+                  - "ssm:GetParameters"
+                  - "ssm:ListAssociations"
+                  - "ssm:ListInstanceAssociations"
+                  - "ssm:PutInventory"
+                  - "ssm:PutComplianceItems"
+                  - "ssm:PutConfigurePackageResult"
+                  - "ssm:UpdateAssociationStatus"
+                  - "ssm:UpdateInstanceAssociationStatus"
+                  - "ssm:UpdateInstanceInformation"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "ssmmessages:CreateControlChannel"
+                  - "ssmmessages:CreateDataChannel"
+                  - "ssmmessages:OpenControlChannel"
+                  - "ssmmessages:OpenDataChannel"
+                Resource: "*"
+  WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref WebRole
+  WebASGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      LaunchConfigurationName: !Ref WebLaunchConfig
+      MinSize: !Ref AutoScalingDesiredMin
+      MaxSize: !Ref AutoScalingDesiredMax
+      TargetGroupARNs:
+        - !Ref WebELBGroupHttp
+      MetricsCollection:
+        - Granularity: "1Minute"
+          Metrics:
+            - "GroupMinSize"
+            - "GroupMaxSize"
+  WebLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref InstanceImageId
+      SecurityGroups: [!Ref "WebServerSecurityGroup"]
+      InstanceType: !Ref "InstanceType"
+      IamInstanceProfile: !Ref "WebInstanceProfile"
+      UserData:
+        'Fn::Base64': !Sub |
+          #!/bin/bash -ex
+          sudo yum install httpd php -y
+          sudo service httpd start
+          sudo chkconfig httpd on
+          echo '<?php echo gethostname(); ?>' > /var/www/html/index.php
+          tee /var/www/html/stress.php <<EOF
+          <?php
+          for($i = 0; $i < 1000000000; $i++) {
+              $a += $i;
+          }
+          EOF
+  WebServerScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: PercentChangeInCapacity
+      AutoScalingGroupName: !Ref "WebASGroup"
+      Cooldown: "60"
+      ScalingAdjustment: 67
+
+  WebServerScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref "WebASGroup"
+      Cooldown: "60"
+      ScalingAdjustment: -1
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 80% for 2 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref AutoScalingOutPolicyHighCPU
+      AlarmActions: [!Ref "WebServerScaleUpPolicy"]
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref "WebASGroup"
+      ComparisonOperator: GreaterThanThreshold
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 30% for 10 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref AutoScalingInPolicyLowCPU
+      AlarmActions: [!Ref "WebServerScaleDownPolicy"]
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref "WebASGroup"
+      ComparisonOperator: LessThanThreshold
+  WebELB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: !Ref ALBScheme
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref WebSG
+  ELBListen80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebELBGroupHttp
+      LoadBalancerArn: !Ref WebELB
+      Port: 80
+      Protocol: HTTP
+  WebELBGroupHttp:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "20"
+        - Key: load_balancing.algorithm.type
+          Value: "least_outstanding_requests"
+      TargetType: instance
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: For EC2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt WebSG.GroupId
+  WebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: For ELB
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+############################################
+#                   RDS                    #
+############################################
+  RdsDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Database subnets for RDS
+      SubnetIds:
+      - !Ref PrivateSubnetA
+      - !Ref PrivateSubnetB
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: For RDS
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt WebSG.GroupId
+  RDSCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBSubnetGroupName: !Ref RdsDbSubnetGroup
+      DatabaseName: !Ref DatabaseName
+      MasterUsername: !Ref DatabaseUserName
+      MasterUserPassword: !Ref DatabasePassword
+      Engine: aurora-mysql
+      VpcSecurityGroupIds:
+      - !Ref RdsSecurityGroup
+      DBClusterIdentifier: !Sub '${AWS::StackName}-dbcluster'
+      DBClusterParameterGroupName: !Ref RdsDbClusterParameterGroup
+      PreferredBackupWindow: 18:05-18:35
+      BackupRetentionPeriod: 7
+      PreferredMaintenanceWindow: Thu:18:35-Thu:19:05
+  RdsDbInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSubnetGroupName: !Ref RdsDbSubnetGroup
+      DBParameterGroupName: !Ref RdsDbParameterGroup
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref RDSCluster
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-dbinstance-1'
+      AutoMinorVersionUpgrade: "true"
+      PubliclyAccessible: "false"
+      StorageEncrypted: "false"
+      PreferredMaintenanceWindow: Thu:19:05-Thu:19:35
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      DBInstanceClass: !Ref DatabaseReaderInstancetype
+  RdsDbInstance2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSubnetGroupName: !Ref RdsDbSubnetGroup
+      DBParameterGroupName: !Ref RdsDbParameterGroup
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref RDSCluster
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-dbinstance-2'
+      AutoMinorVersionUpgrade: "true"
+      PubliclyAccessible: "false"
+      StorageEncrypted: "false"
+      PreferredMaintenanceWindow: Thu:19:05-Thu:19:35
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      DBInstanceClass: !Ref DatabaseReaderInstancetype
+  RdsDbClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: CloudFormation Aurora Cluster Parameter Group
+      Family: aurora-mysql5.7
+      Parameters:
+        server_audit_logging: 0
+        server_audit_events: 'CONNECT,QUERY,QUERY_DCL,QUERY_DDL,QUERY_DML,TABLE'
+  RdsDbParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: CloudFormation Aurora Parameter Group
+      Family: aurora-mysql5.7
+      Parameters:
+        aurora_lab_mode: 0
+        general_log: 1
+        slow_query_log: 1
+        long_query_time: 3
+############################################
+#           Deployment Pipeline            #
+############################################
+  WebCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: WebAppRepo
+      RepositoryDescription: "a sample application"
+  WebBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole: !GetAtt CodeBuildTrustRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 30
+      Environment:
+        Type: linuxContainer
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: "aws/codebuild/java:openjdk-8"
+  WebDeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: "WebAppRepo"
+  WebDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: CodeBuildTrustRole
+    Properties:
+      ApplicationName: !Ref WebDeployApp
+      DeploymentGroupName: develop
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+      ServiceRoleArn: !GetAtt CodeDeployTrustRole.Arn
+      AutoScalingGroups:
+        - !Ref WebASGroup
+      DeploymentStyle:
+        DeploymentType: IN_PLACE
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      LoadBalancerInfo:
+        TargetGroupInfoList:
+          - Name: !GetAtt WebELBGroupHttp.TargetGroupName
+  MasterPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn: ArtifactStoreBucket
+    Properties:
+      Name: WebAppRepo-master
+      RoleArn: !GetAtt CodePipelineTrustRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: ApplicationSource
+              # InputArtifacts: ''
+              ActionTypeId:
+                Version: '1'
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: WebAppRepo-SourceArtifact
+              Configuration:
+                RepositoryName: WebAppRepo
+                BranchName: master
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: ApplicationBuild
+              InputArtifacts:
+                - Name: WebAppRepo-SourceArtifact
+              ActionTypeId:
+                Version: '1'
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+              OutputArtifacts:
+                - Name: WebAppRepo-BuiltArtifact
+              Configuration:
+                ProjectName: WebAppRepo
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: ApplicationDeploy
+              InputArtifacts:
+                - Name: WebAppRepo-BuiltArtifact
+              ActionTypeId:
+                Version: '1'
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+              Configuration:
+                ApplicationName: !Ref WebDeployApp
+                DeploymentGroupName: !Ref WebDeploymentGroup
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Join ["", ["sample", !Ref "AWS::Region", "-", !Ref "AWS::AccountId" ]]
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["", ["sample", !Ref "AWS::Region", "-", !Ref "AWS::AccountId" ]]
+      VersioningConfiguration:
+        Status: Enabled
+###############
+# IAM
+  CodeBuildTrustRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: 12321321312
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+  CodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeBuildPolicy
+      Roles:
+        - !Ref CodeBuildTrustRole
+      PolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Resource:
+              - !Join ["", ["arn:aws:logs:", !Ref "AWS::Region", "", !Ref "AWS::AccountId", ":log-group:/aws/codebuild/WebAppRepo"]]
+              - !Join ["", ["arn:aws:logs:", !Ref "AWS::Region", "", !Ref "AWS::AccountId", ":log-group:/aws/codebuild/WebAppRepo:*"]]
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+          - Effect: "Allow"
+            Resource:
+              - !Join ["", ["arn:aws:s3:::cicd-demo-", !Ref "AWS::Region", "", !Ref "AWS::AccountId", ":log-group:/aws/codebuild/WebAppRepo"]]
+              - !Join ["", ["arn:aws:s3:::cicd-demo-", !Ref "AWS::Region", "", !Ref "AWS::AccountId", "/*"]]
+            Action:
+              - "s3:PutObject"
+              - "s3:GetObject"
+              - "s3:GetObjectVersion"
+  CodeDeployTrustRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: "019231"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codedeploy.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole"
+  CodePipelineTrustRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: "0391412957"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action: "sts:AssumeRole"
+  CodePipelineRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref CodePipelineTrustRole
+      PolicyName: CodePipelinePolicy
+      PolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Resource:
+              - "*"
+            Action:
+              - "s3:*"
+          - Effect: "Allow"
+            Resource:
+              - !Join ["", ["arn:aws:s3:::cicd-demo-", !Ref "AWS::Region", "", "-", !Ref "AWS::AccountId"]]
+            Action:
+              - "s3:PutBucketPolicy"
+              - "s3:PutObject"
+          - Effect: "Allow"
+            Resource:
+              - "*"
+            Action:
+              - "codecommit:GetBranch"
+              - "codecommit:GetCommit"
+              - "codecommit:UploadArchive"
+              - "codecommit:GetUploadArchiveStatus"
+              - "codecommit:CancelUploadArchive"
+          - Effect: "Allow"
+            Resource:
+              - "*"
+            Action:
+              - "codepipeline:*"
+              - "iam:ListRoles"
+              - "iam:PassRole"
+              - "codedeploy:CreateDeployment"
+              - "codedeploy:GetApplicationRevision"
+              - "codedeploy:GetDeployment"
+              - "codedeploy:GetDeploymentConfig"
+              - "codedeploy:RegisterApplicationRevision"
+              - "elasticbeanstalk:DescribeApplications"
+              - "elasticbeanstalk:DescribeEnvironments"
+              - "lambda:GetFunctionConfiguration"
+              - "lambda:ListFunctions"
+          - Effect: "Allow"
+            Resource:
+              - "*"
+            Action:
+                - "codebuild:StartBuild"
+                - "codebuild:StopBuild"
+                - "codebuild:BatchGet*"
+                - "codebuild:Get*"
+                - "codebuild:List*"
+                - "codecommit:GetBranch"
+                - "codecommit:GetCommit"
+                - "codecommit:GetRepository"
+                - "codecommit:ListBranches"
+                - "s3:GetBucketLocation"
+                - "s3:ListAllMyBuckets"
+          - Effect: "Allow"
+            Resource:
+              - "arn:aws:logs:*:*:log-group:/aws/codebuild/*:log-stream:*"
+            Action:
+                - "logs:GetLogEvents"
+
+
